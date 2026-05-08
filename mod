@@ -97,14 +97,26 @@ ensure_speedtest_cli() {
 
     log "No /usr/bin/speedtest found. Trying to install Ookla speedtest CLI..."
     if command -v apt-get >/dev/null 2>&1; then
-        curl -sSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash >/dev/null 2>&1 || true
+        local deb_script
+        deb_script=$(mktemp)
+        curl -fsSL -o "$deb_script" https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh >/dev/null 2>&1 || true
+        [[ -s "$deb_script" ]] && bash "$deb_script" >/dev/null 2>&1 || true
+        rm -f "$deb_script"
         apt-get update -y >/dev/null 2>&1 || true
         DEBIAN_FRONTEND=noninteractive apt-get install -y speedtest >/dev/null 2>&1 || true
     elif command -v dnf >/dev/null 2>&1; then
-        curl -sSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.rpm.sh | bash >/dev/null 2>&1 || true
+        local rpm_script
+        rpm_script=$(mktemp)
+        curl -fsSL -o "$rpm_script" https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.rpm.sh >/dev/null 2>&1 || true
+        [[ -s "$rpm_script" ]] && bash "$rpm_script" >/dev/null 2>&1 || true
+        rm -f "$rpm_script"
         dnf install -y speedtest >/dev/null 2>&1 || true
     elif command -v yum >/dev/null 2>&1; then
-        curl -sSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.rpm.sh | bash >/dev/null 2>&1 || true
+        local rpm_script
+        rpm_script=$(mktemp)
+        curl -fsSL -o "$rpm_script" https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.rpm.sh >/dev/null 2>&1 || true
+        [[ -s "$rpm_script" ]] && bash "$rpm_script" >/dev/null 2>&1 || true
+        rm -f "$rpm_script"
         yum install -y speedtest >/dev/null 2>&1 || true
     fi
 
@@ -143,7 +155,7 @@ help() {
 Pi-hole Speedtest runner
 
 Usage:
-  sudo bash speedtest.sh [options]
+  sudo bash /opt/pihole/speedtestmod/speedtest.sh [options]
   curl -sSL https://github.com/town3r/pihole-speedtest/raw/master/test | sudo bash -s -- [options]
 
 Options:
@@ -168,6 +180,20 @@ run_speedtest() {
         else
             /usr/bin/speedtest --json --share --secure
         fi
+    fi
+}
+
+sql_escape() {
+    printf "%s" "$1" | sed "s/'/''/g"
+}
+
+to_number() {
+    local value="$1"
+    local fallback="$2"
+    if [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+        printf "%s" "$value"
+    else
+        printf "%s" "$fallback"
     fi
 }
 
@@ -218,8 +244,19 @@ parse_and_store() {
     fi
 
     mkdir -p "$(dirname "$database")"
+    local esc_isp esc_from_ip esc_server_name esc_share_url
+    esc_isp=$(sql_escape "$isp")
+    esc_from_ip=$(sql_escape "$from_ip")
+    esc_server_name=$(sql_escape "$server_name")
+    esc_share_url=$(sql_escape "$share_url")
+    server_dist=$(to_number "$server_dist" "-1")
+    server_ping=$(to_number "$server_ping" "0")
+    download=$(to_number "$download" "0")
+    upload=$(to_number "$upload" "0")
+
     sqlite3 "$database" "$CREATE_TABLE"
-    sqlite3 "$database" "insert into speedtest values (NULL, '${start}', '${stop}', '${isp}', '${from_ip}', '${server_name}', ${server_dist}, ${server_ping}, ${download}, ${upload}, '${share_url}');"
+    sqlite3 "$database" "insert into speedtest values (NULL, '${start}', '${stop}', '${esc_isp}', '${esc_from_ip}', '${esc_server_name}', ${server_dist}, ${server_ping}, ${download}, ${upload}, '${esc_share_url}');"
+    chmod 640 "$database" 2>/dev/null || true
 
     if [[ -d /var/log/pihole ]]; then
         cp -f "$json_file" /var/log/pihole/speedtest.log
@@ -230,7 +267,7 @@ parse_and_store() {
 }
 
 if [[ $EUID -ne 0 ]]; then
-    echo "Please run as root (for example: sudo bash speedtest.sh ...)." >&2
+    echo "Please run this script as root (for example: sudo bash /opt/pihole/speedtestmod/speedtest.sh ...)." >&2
     exit 1
 fi
 
@@ -329,14 +366,14 @@ if (file_exists($dbPath)) {
     <div class="small-box bg-teal">
         <div class="inner">
             <?php if ($lastTest): ?>
-                <h3><?= htmlspecialchars(number_format((float) $lastTest['download'], 2)) ?> / <?= htmlspecialchars(number_format((float) $lastTest['upload'], 2)) ?></h3>
+                <h3><?= htmlspecialchars(number_format((float) $lastTest['download'], 2), ENT_QUOTES, 'UTF-8') ?> / <?= htmlspecialchars(number_format((float) $lastTest['upload'], 2), ENT_QUOTES, 'UTF-8') ?></h3>
                 <p>Speedtest (Mbps)</p>
-                <p>Ping: <?= htmlspecialchars((string) $lastTest['server_ping']) ?> ms</p>
-                <p>Server: <?= htmlspecialchars((string) $lastTest['server']) ?></p>
+                <p>Ping: <?= htmlspecialchars((string) $lastTest['server_ping'], ENT_QUOTES, 'UTF-8') ?> ms</p>
+                <p>Server: <?= htmlspecialchars((string) $lastTest['server'], ENT_QUOTES, 'UTF-8') ?></p>
             <?php else: ?>
                 <h3>Speedtest</h3>
                 <p>No data yet</p>
-                <p>Run: <code>pihole -a -sn</code></p>
+                <p>Run: <code>sudo bash /opt/pihole/speedtestmod/speedtest.sh</code></p>
             <?php endif; ?>
         </div>
         <div class="icon"><i class="fa fa-tachometer-alt"></i></div>
@@ -366,11 +403,9 @@ patch_v6_content() {
 
 <?php
 // PIHOLE-SPEEDTEST-BEGIN
-if (isset($_SERVER['SCRIPT_NAME']) && basename((string) $_SERVER['SCRIPT_NAME']) === 'index.php') {
-    $speedtestWidget = __DIR__ . '/box_speedtest.php';
-    if (file_exists($speedtestWidget)) {
-        include $speedtestWidget;
-    }
+$speedtestWidget = __DIR__ . '/box_speedtest.php';
+if (file_exists($speedtestWidget)) {
+    include $speedtestWidget;
 }
 // PIHOLE-SPEEDTEST-END
 ?>
@@ -383,6 +418,11 @@ patch_legacy_index() {
     [[ -f "$LEGACY_INDEX" ]] || return 1
 
     if grep -q "$MARKER_BEGIN" "$LEGACY_INDEX"; then
+        return 0
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        log "Warning: python3 is required to patch legacy index.php layout. Skipping legacy UI patch."
         return 0
     fi
 
@@ -493,5 +533,5 @@ main() {
     log "Run a test with: sudo bash $RUNNER_FILE"
 }
 
-require_root "$@"
+require_root
 main "$@"

@@ -55,7 +55,7 @@ Then pull and rebuild without cache:
 
 ### Post Install
 
-After installation, the Mod attempts to install [Ookla's official `speedtest`](https://www.speedtest.net/apps/cli) if `/usr/bin/speedtest` is missing. You can also install any compatible `speedtest` binary yourself (`speedtest-cli` and `librespeed-cli` are supported when exposed as `/usr/bin/speedtest`).
+After installation, the Mod attempts to install [Ookla's official `speedtest`](https://www.speedtest.net/apps/cli) if `/usr/bin/speedtest` is missing. You can also install any compatible `speedtest` binary yourself (`speedtest-cli` and `librespeed-cli` are supported when exposed as `/usr/bin/speedtest`, for example: `sudo ln -sf /usr/bin/speedtest-cli /usr/bin/speedtest`).
 
 ### Pi-hole v6 compatibility
 

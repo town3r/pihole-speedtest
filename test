@@ -25,7 +25,7 @@ help() {
 Pi-hole Speedtest runner
 
 Usage:
-  sudo bash test [options]
+  sudo bash ./test [options]
   curl -sSL https://github.com/town3r/pihole-speedtest/raw/master/test | sudo bash -s -- [options]
 
 Options:
@@ -50,6 +50,20 @@ run_speedtest() {
         else
             /usr/bin/speedtest --json --share --secure
         fi
+    fi
+}
+
+sql_escape() {
+    printf "%s" "$1" | sed "s/'/''/g"
+}
+
+to_number() {
+    local value="$1"
+    local fallback="$2"
+    if [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+        printf "%s" "$value"
+    else
+        printf "%s" "$fallback"
     fi
 }
 
@@ -100,8 +114,19 @@ parse_and_store() {
     fi
 
     mkdir -p "$(dirname "$database")"
+    local esc_isp esc_from_ip esc_server_name esc_share_url
+    esc_isp=$(sql_escape "$isp")
+    esc_from_ip=$(sql_escape "$from_ip")
+    esc_server_name=$(sql_escape "$server_name")
+    esc_share_url=$(sql_escape "$share_url")
+    server_dist=$(to_number "$server_dist" "-1")
+    server_ping=$(to_number "$server_ping" "0")
+    download=$(to_number "$download" "0")
+    upload=$(to_number "$upload" "0")
+
     sqlite3 "$database" "$CREATE_TABLE"
-    sqlite3 "$database" "insert into speedtest values (NULL, '${start}', '${stop}', '${isp}', '${from_ip}', '${server_name}', ${server_dist}, ${server_ping}, ${download}, ${upload}, '${share_url}');"
+    sqlite3 "$database" "insert into speedtest values (NULL, '${start}', '${stop}', '${esc_isp}', '${esc_from_ip}', '${esc_server_name}', ${server_dist}, ${server_ping}, ${download}, ${upload}, '${esc_share_url}');"
+    chmod 640 "$database" 2>/dev/null || true
 
     if [[ -d /var/log/pihole ]]; then
         cp -f "$json_file" /var/log/pihole/speedtest.log
@@ -112,7 +137,7 @@ parse_and_store() {
 }
 
 if [[ $EUID -ne 0 ]]; then
-    echo "Please run as root (for example: sudo bash test ...)." >&2
+    echo "Please run this script as root (for example: sudo bash ./test ...)." >&2
     exit 1
 fi
 

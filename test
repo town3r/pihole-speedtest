@@ -1,3 +1,184 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Pi-hole Speedtest runner (town3r fork)
+set -euo pipefail
 
-curl -sSLN https://github.com/arevindh/pi-hole/raw/master/advanced/Scripts/speedtestmod/speedtest.sh | sudo bash -s -- "$@"
+readonly CREATE_TABLE="create table if not exists speedtest (
+id integer primary key autoincrement,
+start_time text,
+stop_time text,
+from_server text,
+from_ip text,
+server text,
+server_dist real,
+server_ping real,
+download real,
+upload real,
+share_url text
+);"
+
+database="/etc/pihole/speedtest.db"
+attempts=3
+server_id=""
+
+help() {
+    cat <<'USAGE'
+Pi-hole Speedtest runner
+
+Usage:
+  sudo bash test [options]
+  curl -sSL https://github.com/town3r/pihole-speedtest/raw/master/test | sudo bash -s -- [options]
+
+Options:
+  -s, --server <id>       Speedtest server id
+  -l, --list              List available servers
+  -o, --output <file>     SQLite database path (default: /etc/pihole/speedtest.db)
+  -a, --attempts <n>      Number of attempts (default: 3)
+  -h, --help              Show this help
+USAGE
+}
+
+run_speedtest() {
+    if /usr/bin/speedtest --version 2>/dev/null | grep -qi official; then
+        if [[ -n "$server_id" ]]; then
+            /usr/bin/speedtest -s "$server_id" --accept-gdpr --accept-license -f json
+        else
+            /usr/bin/speedtest --accept-gdpr --accept-license -f json
+        fi
+    else
+        if [[ -n "$server_id" ]]; then
+            /usr/bin/speedtest --server "$server_id" --json --share --secure
+        else
+            /usr/bin/speedtest --json --share --secure
+        fi
+    fi
+}
+
+parse_and_store() {
+    local json_file="$1"
+    local start="$2"
+    local stop="$3"
+
+    local isp from_ip server_name server_dist server_ping download upload share_url
+    isp="No Internet"
+    from_ip="-"
+    server_name="-"
+    server_dist="-1"
+    server_ping="0"
+    download="0"
+    upload="0"
+    share_url="#"
+
+    if jq -e '.server' "$json_file" >/dev/null 2>&1; then
+        if /usr/bin/speedtest --version 2>/dev/null | grep -qi official; then
+            server_name=$(jq -r '.server.name // "-"' "$json_file")
+            download=$(jq -r '.download.bandwidth // 0' "$json_file" | awk '{print ($1*8/1000/1000)}')
+            upload=$(jq -r '.upload.bandwidth // 0' "$json_file" | awk '{print ($1*8/1000/1000)}')
+            isp=$(jq -r '.isp // "No Internet"' "$json_file")
+            from_ip=$(jq -r '.interface.externalIp // "-"' "$json_file")
+            server_ping=$(jq -r '.ping.latency // 0' "$json_file")
+            share_url=$(jq -r '.result.url // "#"' "$json_file")
+            server_dist=$(jq -r '.server.distance // -1' "$json_file")
+        else
+            server_name=$(jq -r '.server.sponsor // "-"' "$json_file")
+            download=$(jq -r '.download // 0' "$json_file" | awk '{print ($1/1000/1000)}')
+            upload=$(jq -r '.upload // 0' "$json_file" | awk '{print ($1/1000/1000)}')
+            isp=$(jq -r '.client.isp // "No Internet"' "$json_file")
+            from_ip=$(jq -r '.client.ip // "-"' "$json_file")
+            server_ping=$(jq -r '.ping // 0' "$json_file")
+            share_url=$(jq -r '.share // "#"' "$json_file")
+            server_dist=$(jq -r '.server.d // -1' "$json_file")
+        fi
+    elif jq -e '.[0].server' "$json_file" >/dev/null 2>&1; then
+        server_name=$(jq -r '.[0].server.name // "-"' "$json_file")
+        download=$(jq -r '.[0].download // 0' "$json_file")
+        upload=$(jq -r '.[0].upload // 0' "$json_file")
+        from_ip=$(jq -r '.[0].client.ip // "-"' "$json_file" 2>/dev/null || echo "-")
+        server_ping=$(jq -r '.[0].ping // 0' "$json_file")
+        share_url=$(jq -r '.[0].share // "#"' "$json_file")
+        isp="Unknown"
+        server_dist="-1"
+    fi
+
+    mkdir -p "$(dirname "$database")"
+    sqlite3 "$database" "$CREATE_TABLE"
+    sqlite3 "$database" "insert into speedtest values (NULL, '${start}', '${stop}', '${isp}', '${from_ip}', '${server_name}', ${server_dist}, ${server_ping}, ${download}, ${upload}, '${share_url}');"
+
+    if [[ -d /var/log/pihole ]]; then
+        cp -f "$json_file" /var/log/pihole/speedtest.log
+        cp -f /var/log/pihole/speedtest.log /etc/pihole/speedtest.log 2>/dev/null || true
+    fi
+
+    [[ "$isp" != "No Internet" ]]
+}
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Please run as root (for example: sudo bash test ...)." >&2
+    exit 1
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s|--server)
+            server_id="$2"
+            shift 2
+            ;;
+        -l|--list)
+            if [[ ! -x /usr/bin/speedtest ]]; then
+                echo "speedtest CLI not found at /usr/bin/speedtest"
+                exit 1
+            fi
+            if /usr/bin/speedtest --version 2>/dev/null | grep -qi official; then
+                /usr/bin/speedtest -L
+            else
+                /usr/bin/speedtest --secure --list
+            fi
+            exit 0
+            ;;
+        -o|--output)
+            database="$2"
+            shift 2
+            ;;
+        -a|--attempts)
+            attempts="$2"
+            shift 2
+            ;;
+        -h|--help)
+            help
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            help
+            exit 1
+            ;;
+    esac
+done
+
+if [[ ! -x /usr/bin/speedtest ]]; then
+    echo "speedtest CLI not found at /usr/bin/speedtest"
+    echo "Install Ookla speedtest CLI, speedtest-cli, or librespeed-cli first."
+    exit 1
+fi
+
+if ! [[ "$attempts" =~ ^[0-9]+$ ]]; then
+    attempts=3
+fi
+
+start_time=$(date -u --rfc-3339=seconds)
+json_out=$(mktemp)
+status=1
+
+for ((i=1; i<=attempts; i++)); do
+    if run_speedtest >"$json_out" 2>/dev/null && [[ -s "$json_out" ]] && jq -e . "$json_out" >/dev/null 2>&1; then
+        stop_time=$(date -u --rfc-3339=seconds)
+        if parse_and_store "$json_out" "$start_time" "$stop_time"; then
+            status=0
+            break
+        fi
+    fi
+    echo "Attempt $i failed"
+    sleep 1
+done
+
+rm -f "$json_out"
+exit "$status"
